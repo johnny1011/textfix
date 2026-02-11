@@ -81,6 +81,7 @@ ANTHROPIC_MODEL_CHOICES = [
 ]
 MODEL_CHOICES = OPENAI_MODEL_CHOICES + ANTHROPIC_MODEL_CHOICES
 INLINE_SPINNER_PREFIX = "⏳"
+CONTEXT_WAITING_PREFIX = "🔵 "
 COPY_POLL_INTERVAL = 0.005
 COPY_POLL_ATTEMPTS = 100
 
@@ -391,6 +392,7 @@ class TextFixApp(rumps.App):
         self._run_lock = threading.Lock()
         self._context_text = None
         self._context_lock = threading.Lock()
+        self._pending_fix_text = None
         self.context_hotkey_spec = parse_hotkey(self.config["context_hotkey"]) or parse_hotkey(
             DEFAULT_CONFIG["context_hotkey"]
         )
@@ -409,9 +411,14 @@ class TextFixApp(rumps.App):
         self._run_fix_async()
 
     def on_context_hotkey(self):
-        threading.Thread(target=self._capture_context, daemon=True).start()
+        with self._context_lock:
+            waiting = self._pending_fix_text is not None
+        if waiting:
+            threading.Thread(target=self._context_fix, daemon=True).start()
+        else:
+            threading.Thread(target=self._mark_for_context, daemon=True).start()
 
-    def _capture_context(self):
+    def _mark_for_context(self):
         if not self._run_lock.acquire(blocking=False):
             self._notify("Busy", "Wait for the current fix to finish.", force=True)
             return
@@ -420,16 +427,59 @@ class TextFixApp(rumps.App):
         finally:
             self._run_lock.release()
         if not text.strip():
-            self._notify("No context captured", "Highlight text and try again.", force=True)
+            self._notify("No text selected", "Highlight text and try again.", force=True)
             return
         with self._context_lock:
-            self._context_text = text
+            self._pending_fix_text = text
+        self._replace_selection(CONTEXT_WAITING_PREFIX + text)
         self._set_context_icon(active=True)
-        self._notify("Context captured", f"{len(text)} characters stored.", force=True)
+        self._notify("Waiting for context", "Select context text, then press the shortcut again.", force=True)
+
+    def _context_fix(self):
+        if not self._run_lock.acquire(blocking=False):
+            self._notify("Busy", "Wait for the current fix to finish.", force=True)
+            return
+        try:
+            provider = self._model_provider(self.config["model"])
+            api_key = self._get_api_key_for_provider(provider)
+            if not api_key:
+                self._prompt_for_api_key(provider)
+                return
+
+            context = self._copy_selection()
+            if not context.strip():
+                self._notify("No context selected", "Highlight context text and try again.", force=True)
+                return
+
+            with self._context_lock:
+                text_to_fix = self._pending_fix_text
+                self._pending_fix_text = None
+            self._set_context_icon(active=False)
+
+            self._set_fixing_icon(True)
+            fixed, error = self._rewrite_text(text_to_fix, api_key, provider, context=context)
+            self._set_fixing_icon(False)
+            if not fixed:
+                self._notify(
+                    "No response",
+                    error or "Check your API key or network and retry.",
+                    force=True,
+                )
+                return
+
+            self._set_clipboard(fixed)
+            self._notify(
+                "Fixed! Ready to paste",
+                f"Select the {CONTEXT_WAITING_PREFIX}text and press Cmd+V.",
+                force=True,
+            )
+        finally:
+            self._run_lock.release()
 
     def _clear_context(self):
         with self._context_lock:
             self._context_text = None
+            self._pending_fix_text = None
         self._set_context_icon(active=False)
 
     def _set_context_icon(self, active):
@@ -456,8 +506,8 @@ class TextFixApp(rumps.App):
     @rumps.clicked("Clear Context")
     def clear_context_clicked(self, _):
         with self._context_lock:
-            had_context = self._context_text is not None
-        if had_context:
+            had_state = self._context_text is not None or self._pending_fix_text is not None
+        if had_state:
             self._clear_context()
             self._notify("Context cleared", "", force=True)
         else:
