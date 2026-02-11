@@ -70,6 +70,8 @@ CONFIG_DIR = Path.home() / "Library/Application Support/TextFix"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 ASSET_DIR = CONFIG_DIR / "assets"
 MENU_ICON_PATH = ASSET_DIR / "menu_icon.png"
+CONTEXT_ICON_PATH = ASSET_DIR / "menu_icon_ctx.png"
+FIXING_ICON_PATH = ASSET_DIR / "menu_icon_fix.png"
 OPENAI_MODEL_CHOICES = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
 ANTHROPIC_MODEL_CHOICES = [
     "claude-opus-4-6",
@@ -79,13 +81,14 @@ ANTHROPIC_MODEL_CHOICES = [
 ]
 MODEL_CHOICES = OPENAI_MODEL_CHOICES + ANTHROPIC_MODEL_CHOICES
 INLINE_SPINNER_PREFIX = "⏳"
-COPY_POLL_INTERVAL = 0.02
-COPY_POLL_ATTEMPTS = 25
+COPY_POLL_INTERVAL = 0.005
+COPY_POLL_ATTEMPTS = 100
 
 DEFAULT_CONFIG = {
     "openai_api_key": "",
     "anthropic_api_key": "",
     "hotkey": "<cmd>+<shift>+g",
+    "context_hotkey": "<cmd>+<shift>+h",
     "model": "gpt-4.1-mini",
     "temperature": 0.0,
     "max_output_tokens": 512,
@@ -377,6 +380,7 @@ class TextFixApp(rumps.App):
         self.menu = [
             "Settings...",
             "Open Config Folder",
+            "Clear Context",
             None,
             "Quit",
         ]
@@ -385,6 +389,11 @@ class TextFixApp(rumps.App):
             DEFAULT_CONFIG["hotkey"]
         )
         self._run_lock = threading.Lock()
+        self._context_text = None
+        self._context_lock = threading.Lock()
+        self.context_hotkey_spec = parse_hotkey(self.config["context_hotkey"]) or parse_hotkey(
+            DEFAULT_CONFIG["context_hotkey"]
+        )
         self._hotkey_tap = None
         self._hotkey_tap_callback = None
         self._hotkey_source = None
@@ -399,6 +408,43 @@ class TextFixApp(rumps.App):
             return
         self._run_fix_async()
 
+    def on_context_hotkey(self):
+        threading.Thread(target=self._capture_context, daemon=True).start()
+
+    def _capture_context(self):
+        if not self._run_lock.acquire(blocking=False):
+            self._notify("Busy", "Wait for the current fix to finish.", force=True)
+            return
+        try:
+            text = self._copy_selection()
+        finally:
+            self._run_lock.release()
+        if not text.strip():
+            self._notify("No context captured", "Highlight text and try again.", force=True)
+            return
+        with self._context_lock:
+            self._context_text = text
+        self._set_context_icon(active=True)
+        self._notify("Context captured", f"{len(text)} characters stored.", force=True)
+
+    def _clear_context(self):
+        with self._context_lock:
+            self._context_text = None
+        self._set_context_icon(active=False)
+
+    def _set_context_icon(self, active):
+        if active:
+            icon_path = _render_text_icon("Aa+", CONTEXT_ICON_PATH, font_size=13)
+        else:
+            icon_path = ensure_menu_icon()
+        self.icon = icon_path
+
+    def _set_fixing_icon(self, active):
+        if active:
+            self.icon = _render_text_icon(INLINE_SPINNER_PREFIX, FIXING_ICON_PATH)
+        else:
+            self.icon = ensure_menu_icon()
+
     @rumps.clicked("Settings...")
     def settings_clicked(self, _):
         self._open_settings()
@@ -406,6 +452,16 @@ class TextFixApp(rumps.App):
     @rumps.clicked("Open Config Folder")
     def open_config_folder(self, _):
         os.spawnlp(os.P_NOWAIT, "open", "open", str(CONFIG_DIR))
+
+    @rumps.clicked("Clear Context")
+    def clear_context_clicked(self, _):
+        with self._context_lock:
+            had_context = self._context_text is not None
+        if had_context:
+            self._clear_context()
+            self._notify("Context cleared", "", force=True)
+        else:
+            self._notify("No context", "No context is currently stored.", force=True)
 
     @rumps.clicked("Quit")
     def quit_app(self, _):
@@ -430,12 +486,16 @@ class TextFixApp(rumps.App):
                 self._notify("No text selected", "Highlight text and try again.")
                 return
 
-            display_text = f"{INLINE_SPINNER_PREFIX} {selected_text}"
-            self._replace_selection_and_select_left(display_text, len(display_text))
-            self._notify("Fixing text…", "")
-            fixed, error = self._rewrite_text(selected_text, api_key, provider)
+            with self._context_lock:
+                context = self._context_text
+                self._context_text = None
+            if context:
+                self._set_context_icon(active=False)
+
+            self._set_fixing_icon(True)
+            fixed, error = self._rewrite_text(selected_text, api_key, provider, context=context)
+            self._set_fixing_icon(False)
             if not fixed:
-                self._replace_selection(selected_text)
                 self._notify(
                     "No response",
                     error or "Check your API key or network and retry.",
@@ -448,7 +508,7 @@ class TextFixApp(rumps.App):
         finally:
             self._run_lock.release()
 
-    def _rewrite_text(self, text, api_key, provider):
+    def _rewrite_text(self, text, api_key, provider, context=None):
         if provider == "anthropic":
             return rewrite_text_anthropic(
                 text,
@@ -458,6 +518,7 @@ class TextFixApp(rumps.App):
                 self.config["temperature"],
                 self.config["max_output_tokens"],
                 timeout=30,
+                context=context,
             )
         return rewrite_text(
             text,
@@ -467,6 +528,7 @@ class TextFixApp(rumps.App):
             self.config["temperature"],
             self.config["max_output_tokens"],
             timeout=30,
+            context=context,
         )
 
     def _model_provider(self, model):
@@ -511,17 +573,6 @@ class TextFixApp(rumps.App):
         self._set_clipboard(text)
         self._paste()
 
-    def _replace_selection_and_select_left(self, text, select_len):
-        self._set_clipboard(text)
-        self._paste()
-        self._select_left(select_len)
-
-    def _select_left(self, count):
-        if count <= 0:
-            return
-        for _ in range(count):
-            self._press_keycode(KEYCODE_MAP["left"], kCGEventFlagMaskShift)
-
     def _press_keycode(self, keycode, flags):
         event = CGEventCreateKeyboardEvent(None, keycode, True)
         if flags:
@@ -547,6 +598,17 @@ class TextFixApp(rumps.App):
         new_hotkey = fields["hotkey"].stringValue().strip()
         if new_hotkey and new_hotkey != self.config["hotkey"]:
             if not self._set_hotkey(new_hotkey):
+                return
+
+        new_context_hotkey = fields["context_hotkey"].stringValue().strip()
+        if new_context_hotkey and new_context_hotkey != self.config.get("context_hotkey", ""):
+            if new_context_hotkey == (new_hotkey or self.config["hotkey"]):
+                self._show_alert(
+                    "Hotkey conflict",
+                    "Context hotkey must differ from the fix hotkey.",
+                )
+                return
+            if not self._set_context_hotkey(new_context_hotkey):
                 return
 
         openai_key = fields["openai_api_key"].stringValue().strip()
@@ -578,7 +640,8 @@ class TextFixApp(rumps.App):
         padding = 12
 
         rows = [
-            ("Hotkey", "hotkey", self.config["hotkey"]),
+            ("Fix Hotkey", "hotkey", self.config["hotkey"]),
+            ("Context Hotkey", "context_hotkey", self.config.get("context_hotkey", DEFAULT_CONFIG["context_hotkey"])),
             ("OpenAI API key", "openai_api_key", self.config.get("openai_api_key", "")),
             ("Anthropic API key", "anthropic_api_key", self.config.get("anthropic_api_key", "")),
             ("Model", "model", self.config["model"]),
@@ -609,7 +672,7 @@ class TextFixApp(rumps.App):
             label_field.setEditable_(False)
             label_field.setSelectable_(False)
 
-            if key == "hotkey":
+            if key in ("hotkey", "context_hotkey"):
                 input_field = HotkeyCaptureView.alloc().initWithFrame_(
                     NSMakeRect(padding + label_width, y, input_width, row_height)
                 )
@@ -688,6 +751,18 @@ class TextFixApp(rumps.App):
         self.config["hotkey"] = hotkey
         return True
 
+    def _set_context_hotkey(self, hotkey):
+        spec = parse_hotkey(hotkey)
+        if not spec:
+            self._show_alert(
+                "Invalid context hotkey",
+                "Use format like <cmd>+<shift>+h",
+            )
+            return False
+        self.context_hotkey_spec = spec
+        self.config["context_hotkey"] = hotkey
+        return True
+
     def _parse_float(self, value, default):
         try:
             return float(value)
@@ -752,20 +827,28 @@ class TextFixApp(rumps.App):
         if plist_path.exists():
             plist_path.unlink()
 
+    def _match_hotkey(self, spec, keycode, flags):
+        if not spec:
+            return False
+        if keycode != spec["keycode"]:
+            return False
+        required = spec["modifiers"]
+        if required and (flags & required) != required:
+            return False
+        return True
+
     def _setup_hotkey_tap(self):
         def callback(_proxy, event_type, event, _refcon):
             if event_type != kCGEventKeyDown:
                 return event
-            if not self.hotkey_spec:
-                return event
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-            if keycode != self.hotkey_spec["keycode"]:
-                return event
             flags = CGEventGetFlags(event)
-            required = self.hotkey_spec["modifiers"]
-            if required and (flags & required) != required:
+            if self._match_hotkey(self.hotkey_spec, keycode, flags):
+                self.on_hotkey()
                 return event
-            self.on_hotkey()
+            if self._match_hotkey(self.context_hotkey_spec, keycode, flags):
+                self.on_context_hotkey()
+                return event
             return event
 
         self._hotkey_tap_callback = callback
