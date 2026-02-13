@@ -1,0 +1,41 @@
+name: TextFix
+options:
+  deploymentTarget:
+    macOS: "13.0"
+  bundleIdPrefix: com.textfix
+
+targets:
+  TextFix:
+    type: application
+    platform: macOS
+    sources:
+      - TextFix
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.textfix.app
+        INFOPLIST_FILE: TextFix/Resources/Info.plist
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        GENERATE_INFOPLIST_FILE: false
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+    entitlements:
+      path: TextFix/Resources/TextFix.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+
+  TextFixTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - TextFixTests
+    dependencies:
+      - target: TextFix
+    settings:
+      base:
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: true
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TextFix.app/Contents/MacOS/TextFix"

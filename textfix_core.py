@@ -2,6 +2,24 @@ import json
 
 import requests
 
+_session = requests.Session()
+
+
+_CONTEXT_PROMPT_SUFFIX = (
+    "\n\nThe user has provided surrounding context in <context> tags. "
+    "Use it to understand tone, topic, and intent. Fix only the text "
+    "inside <text_to_fix> tags. Return only the corrected text, without any tags."
+)
+
+
+def _format_input_with_context(text, context):
+    if not context:
+        return text
+    return (
+        f"<context>\n{context}\n</context>\n\n"
+        f"<text_to_fix>\n{text}\n</text_to_fix>"
+    )
+
 
 def extract_output_text(payload):
     output = []
@@ -31,20 +49,25 @@ def rewrite_text(
     max_output_tokens,
     timeout=30,
     session=None,
+    context=None,
 ):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    input_text = _format_input_with_context(text, context)
+    effective_prompt = system_prompt
+    if context:
+        effective_prompt = system_prompt + _CONTEXT_PROMPT_SUFFIX
     payload = {
         "model": model,
-        "instructions": system_prompt,
-        "input": text,
+        "instructions": effective_prompt,
+        "input": input_text,
         "temperature": temperature,
         "max_output_tokens": max_output_tokens,
     }
 
-    client = session or requests
+    client = session or _session
     try:
         response = client.post(
             "https://api.openai.com/v1/responses",
@@ -86,23 +109,28 @@ def rewrite_text_anthropic(
     max_output_tokens,
     timeout=30,
     session=None,
+    context=None,
 ):
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
+    input_text = _format_input_with_context(text, context)
+    effective_prompt = system_prompt
+    if context:
+        effective_prompt = system_prompt + _CONTEXT_PROMPT_SUFFIX
     payload = {
         "model": model,
         "max_tokens": max_output_tokens,
-        "messages": [{"role": "user", "content": text}],
+        "messages": [{"role": "user", "content": input_text}],
     }
-    if system_prompt:
-        payload["system"] = system_prompt
+    if effective_prompt:
+        payload["system"] = effective_prompt
     if temperature is not None:
         payload["temperature"] = temperature
 
-    client = session or requests
+    client = session or _session
     try:
         response = client.post(
             "https://api.anthropic.com/v1/messages",
