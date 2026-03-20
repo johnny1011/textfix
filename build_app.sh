@@ -7,6 +7,7 @@ APP_BUNDLE="${ROOT_DIR}/dist/${APP_NAME}"
 APP_CONTENTS="${APP_BUNDLE}/Contents"
 APP_BINARY="${ROOT_DIR}/.build/release/TextFix"
 INFO_PLIST="${ROOT_DIR}/Packaging/Info.plist"
+SIGN_IDENTITY="${TEXTFIX_SIGN_IDENTITY:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "This builder only supports macOS."
@@ -46,6 +47,18 @@ if command -v xcrun >/dev/null 2>&1; then
     --scan-executable "${APP_CONTENTS}/MacOS/TextFix" \
     --platform macosx \
     --destination "${APP_CONTENTS}/Frameworks" >/dev/null
+fi
+
+if [[ -n "${SIGN_IDENTITY}" ]]; then
+  echo "Signing ${APP_NAME} with ${SIGN_IDENTITY}..."
+  codesign --force --deep --sign "${SIGN_IDENTITY}" --timestamp=none "${APP_BUNDLE}"
+  codesign --verify --deep --strict "${APP_BUNDLE}"
+else
+  cat <<EOF
+Note: ${APP_NAME} was built without a persistent code-signing identity.
+macOS Accessibility and Input Monitoring permissions can reset across rebuilds for ad-hoc signed apps.
+Set TEXTFIX_SIGN_IDENTITY to a valid code-signing identity before running this script to keep a stable app identity.
+EOF
 fi
 
 echo "Built ${APP_BUNDLE}"

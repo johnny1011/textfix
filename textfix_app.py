@@ -419,7 +419,6 @@ class TextFixApp(rumps.App):
                 "Rewrite as Better Prompt",
                 None,
                 "Settings...",
-                "Open Config Folder",
                 None,
                 "Quit",
             ]
@@ -427,7 +426,6 @@ class TextFixApp(rumps.App):
         self.menu["Fix Selection"].set_callback(self.fix_selection_clicked)
         self.menu["Rewrite as Better Prompt"].set_callback(self.rewrite_prompt_clicked)
         self.menu["Settings..."].set_callback(self.settings_clicked)
-        self.menu["Open Config Folder"].set_callback(self.open_config_folder)
         self.menu["Quit"].set_callback(self.quit_app)
 
     def _ensure_edit_menu(self):
@@ -484,9 +482,6 @@ class TextFixApp(rumps.App):
 
     def settings_clicked(self, _):
         self._open_settings()
-
-    def open_config_folder(self, _):
-        os.spawnlp(os.P_NOWAIT, "open", "open", str(CONFIG_DIR))
 
     def quit_app(self, _):
         rumps.quit_application()

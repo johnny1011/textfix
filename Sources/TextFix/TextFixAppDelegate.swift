@@ -79,17 +79,6 @@ final class TextFixAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    @objc private func openConfigFolderClicked(_ sender: Any?) {
-        do {
-            try configStore.ensureConfigDirectory()
-        } catch {
-            showAlert(title: "Unable to open config folder", message: error.localizedDescription)
-            return
-        }
-        NSWorkspace.shared.open(configStore.configDirectoryURL)
-    }
-
-    @MainActor
     @objc private func quitClicked(_ sender: Any?) {
         NSApp.terminate(nil)
     }
@@ -105,7 +94,6 @@ final class TextFixAppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Rewrite as Better Prompt", action: #selector(rewritePromptClicked(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings...", action: #selector(settingsClicked(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Open Config Folder", action: #selector(openConfigFolderClicked(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quitClicked(_:)), keyEquivalent: "q")
 

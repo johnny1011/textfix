@@ -198,24 +198,44 @@ final class HotkeyManager {
 @MainActor
 final class HotkeyCaptureView: NSView {
     private let displayField: NSTextField
+    private let capsuleView: NSView
+    private var storedValue = ""
+    private var storedPlaceholder = ""
 
     override init(frame frameRect: NSRect) {
-        displayField = NSTextField(frame: NSRect(origin: .zero, size: frameRect.size))
+        displayField = NSTextField(frame: .zero)
+        capsuleView = NSView(frame: .zero)
         super.init(frame: frameRect)
 
         wantsLayer = true
-        layer?.cornerRadius = 6
+        translatesAutoresizingMaskIntoConstraints = false
 
+        capsuleView.translatesAutoresizingMaskIntoConstraints = false
+        capsuleView.wantsLayer = true
+        addSubview(capsuleView)
+
+        displayField.translatesAutoresizingMaskIntoConstraints = false
         displayField.isEditable = false
         displayField.isSelectable = false
-        displayField.isBordered = true
-        displayField.isBezeled = true
-        displayField.drawsBackground = true
+        displayField.isBordered = false
+        displayField.isBezeled = false
+        displayField.drawsBackground = false
         displayField.focusRingType = .none
-        displayField.autoresizingMask = [.width, .height]
+        displayField.alignment = .center
+        capsuleView.addSubview(displayField)
 
-        addSubview(displayField)
+        NSLayoutConstraint.activate([
+            capsuleView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            capsuleView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            capsuleView.topAnchor.constraint(equalTo: topAnchor),
+            capsuleView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            displayField.leadingAnchor.constraint(equalTo: capsuleView.leadingAnchor, constant: 12),
+            displayField.trailingAnchor.constraint(equalTo: capsuleView.trailingAnchor, constant: -12),
+            displayField.centerYAnchor.constraint(equalTo: capsuleView.centerYAnchor),
+        ])
+
         updateAppearance()
+        updateText()
     }
 
     @available(*, unavailable)
@@ -263,28 +283,67 @@ final class HotkeyCaptureView: NSView {
         bounds
     }
 
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 260, height: 52)
+    }
+
     func setStringValue(_ value: String) {
-        displayField.stringValue = value
+        storedValue = value
+        updateText()
+        invalidateIntrinsicContentSize()
     }
 
     func stringValue() -> String {
-        displayField.stringValue
+        storedValue
     }
 
     func setPlaceholderString(_ value: String) {
-        displayField.placeholderString = value
+        storedPlaceholder = value
+        updateText()
+        invalidateIntrinsicContentSize()
     }
 
     private func capture(event: NSEvent) {
         guard let hotkey = HotkeySupport.format(event: event) else {
             return
         }
-        displayField.stringValue = hotkey
+        storedValue = hotkey
+        updateText()
+    }
+
+    private func updateText() {
+        let hasValue = !storedValue.isEmpty
+        displayField.stringValue = hasValue ? displayValue(for: storedValue) : storedPlaceholder
+        displayField.textColor = hasValue ? .white : NSColor.white.withAlphaComponent(0.62)
+        displayField.font = hasValue
+            ? NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
+            : NSFont.systemFont(ofSize: 11.5, weight: .medium)
+    }
+
+    private func displayValue(for value: String) -> String {
+        value
+            .replacingOccurrences(of: "<cmd>", with: "⌘")
+            .replacingOccurrences(of: "<shift>", with: "⇧")
+            .replacingOccurrences(of: "<alt>", with: "⌥")
+            .replacingOccurrences(of: "<ctrl>", with: "⌃")
+            .replacingOccurrences(of: "+", with: " ")
+            .uppercased()
     }
 
     private func updateAppearance() {
         let isFocused = window?.firstResponder === self
-        layer?.borderWidth = isFocused ? 2 : 1
-        layer?.borderColor = (isFocused ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
+        capsuleView.layer?.cornerRadius = 12
+        capsuleView.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.17,
+            green: 0.19,
+            blue: 0.22,
+            alpha: 1
+        ).cgColor
+        capsuleView.layer?.borderWidth = isFocused ? 1.5 : 1
+        capsuleView.layer?.borderColor = (isFocused ? NSColor.controlAccentColor : NSColor.white.withAlphaComponent(0.08)).cgColor
+        capsuleView.layer?.shadowColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        capsuleView.layer?.shadowOpacity = 1
+        capsuleView.layer?.shadowRadius = isFocused ? 10 : 6
+        capsuleView.layer?.shadowOffset = CGSize(width: 0, height: -1)
     }
 }

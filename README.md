@@ -43,6 +43,15 @@ open dist/TextFix.app
 
 `build_app.sh` assembles a native app bundle at `dist/TextFix.app`.
 
+To keep Accessibility permissions across updates, sign the app with a persistent identity and launch the installed copy from `/Applications` or `~/Applications`:
+
+```bash
+TEXTFIX_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./install.sh
+open /Applications/TextFix.app
+```
+
+Without a real signing identity, macOS treats rebuilt bundles as a different app and may ask for Accessibility or Input Monitoring again.
+
 ## Tests
 
 ```bash
@@ -57,6 +66,8 @@ On first run, macOS will ask for Accessibility permissions. Enable **TextFix** i
 - System Settings > Privacy & Security > Input Monitoring, if macOS prompts for it
 
 Then relaunch the app.
+
+If macOS keeps asking after every rebuild, use `./install.sh` so the app stays at a fixed install path, and set `TEXTFIX_SIGN_IDENTITY` during build/install so the bundle keeps a stable code signature.
 
 ## Hotkeys and settings
 
