@@ -1,4 +1,2 @@
-rumps
-requests
-pyobjc-framework-Cocoa
-pyobjc-framework-Quartz
+# Legacy file retained during the Swift migration.
+# The maintained app no longer depends on Python packages.

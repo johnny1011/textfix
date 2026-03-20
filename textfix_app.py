@@ -9,25 +9,21 @@ from pathlib import Path
 
 import objc
 import rumps
+from PyObjCTools import AppHelper
 from textfix_core import rewrite_text, rewrite_text_anthropic
 from AppKit import (
     NSAlert,
+    NSApp,
     NSButton,
-    NSBitmapImageFileTypePNG,
-    NSBitmapImageRep,
-    NSColor,
-    NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
-    NSGraphicsContext,
-    NSImage,
     NSMakeRect,
+    NSMenu,
+    NSMenuItem,
     NSPasteboard,
     NSPasteboardTypeString,
     NSPopUpButton,
     NSScrollView,
     NSSecureTextField,
-    NSString,
+    NSSwitch,
     NSTextField,
     NSTextView,
     NSView,
@@ -68,8 +64,6 @@ from CoreFoundation import (
 APP_NAME = "TextFix"
 CONFIG_DIR = Path.home() / "Library/Application Support/TextFix"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-ASSET_DIR = CONFIG_DIR / "assets"
-MENU_ICON_PATH = ASSET_DIR / "menu_icon.png"
 OPENAI_MODEL_CHOICES = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
 ANTHROPIC_MODEL_CHOICES = [
     "claude-opus-4-6",
@@ -81,11 +75,18 @@ MODEL_CHOICES = OPENAI_MODEL_CHOICES + ANTHROPIC_MODEL_CHOICES
 INLINE_SPINNER_PREFIX = "⏳"
 COPY_POLL_INTERVAL = 0.02
 COPY_POLL_ATTEMPTS = 25
+HOTKEY_MODIFIER_MASK = (
+    kCGEventFlagMaskCommand
+    | kCGEventFlagMaskShift
+    | kCGEventFlagMaskAlternate
+    | kCGEventFlagMaskControl
+)
 
 DEFAULT_CONFIG = {
     "openai_api_key": "",
     "anthropic_api_key": "",
     "hotkey": "<cmd>+<shift>+g",
+    "prompt_hotkey": "<cmd>+<option>+g",
     "model": "gpt-4.1-mini",
     "temperature": 0.0,
     "max_output_tokens": 512,
@@ -94,6 +95,11 @@ DEFAULT_CONFIG = {
     "system_prompt": (
         "You are a copyeditor. Fix spelling, grammar, and punctuation while "
         "preserving the original meaning and tone. Return only the corrected text."
+    ),
+    "prompt_system_prompt": (
+        "You are a prompt engineer and copyeditor. Rewrite the user's text into a single, "
+        "clear, high-quality prompt. Fix spelling, grammar, and punctuation. Preserve the "
+        "original intent and important constraints. Return only the rewritten prompt."
     ),
 }
 
@@ -134,35 +140,6 @@ def save_config(config):
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, sort_keys=True)
         f.write("\n")
-
-
-def _render_text_icon(text, path, font_size=16):
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    size = 32
-    image = NSImage.alloc().initWithSize_((size, size))
-    image.lockFocus()
-    NSColor.clearColor().set()
-    NSGraphicsContext.currentContext().setShouldAntialias_(True)
-    font = NSFont.systemFontOfSize_(font_size)
-    attrs = {
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: NSColor.labelColor(),
-    }
-    text_obj = NSString.stringWithString_(text)
-    text_size = text_obj.sizeWithAttributes_(attrs)
-    x = (size - text_size.width) / 2
-    y = (size - text_size.height) / 2
-    text_obj.drawAtPoint_withAttributes_((x, y), attrs)
-    image.unlockFocus()
-
-    rep = NSBitmapImageRep.alloc().initWithData_(image.TIFFRepresentation())
-    png_data = rep.representationUsingType_properties_(NSBitmapImageFileTypePNG, None)
-    path.write_bytes(png_data)
-    return str(path)
-
-
-def ensure_menu_icon():
-    return _render_text_icon("Aa", MENU_ICON_PATH)
 
 
 SPECIAL_KEYCODES = {
@@ -330,6 +307,14 @@ def parse_hotkey(hotkey):
     return {"keycode": keycode, "modifiers": modifiers}
 
 
+def hotkey_matches_event(spec, keycode, flags):
+    if not spec:
+        return False
+    if keycode != spec["keycode"]:
+        return False
+    return (flags & HOTKEY_MODIFIER_MASK) == spec["modifiers"]
+
+
 class HotkeyCaptureView(NSView):
     def initWithFrame_(self, frame):
         self = objc.super(HotkeyCaptureView, self).initWithFrame_(frame)
@@ -370,19 +355,49 @@ class HotkeyCaptureView(NSView):
         self.display.setPlaceholderString_(value)
 
 
+def _handle_edit_shortcut(responder, event):
+    if not (event.modifierFlags() & NSEventModifierFlagCommand):
+        return False
+    key = (event.charactersIgnoringModifiers() or "").lower()
+    if key == "v":
+        responder.paste_(None)
+        return True
+    if key == "c":
+        responder.copy_(None)
+        return True
+    if key == "x":
+        responder.cut_(None)
+        return True
+    if key == "a":
+        responder.selectAll_(None)
+        return True
+    return False
+
+
+class PasteableTextField(NSTextField):
+    def keyDown_(self, event):
+        if _handle_edit_shortcut(self, event):
+            return
+        objc.super(PasteableTextField, self).keyDown_(event)
+
+
+class PasteableSecureTextField(NSSecureTextField):
+    def keyDown_(self, event):
+        if _handle_edit_shortcut(self, event):
+            return
+        objc.super(PasteableSecureTextField, self).keyDown_(event)
+
+
 class TextFixApp(rumps.App):
     def __init__(self):
-        super().__init__(APP_NAME, quit_button=None)
-        self.icon = ensure_menu_icon()
-        self.menu = [
-            "Settings...",
-            "Open Config Folder",
-            None,
-            "Quit",
-        ]
+        super().__init__(APP_NAME, title="Aa", quit_button=None)
+        rumps.events.before_start(self._schedule_ui_setup)
         self.config = load_config()
         self.hotkey_spec = parse_hotkey(self.config["hotkey"]) or parse_hotkey(
             DEFAULT_CONFIG["hotkey"]
+        )
+        self.prompt_hotkey_spec = parse_hotkey(self.config["prompt_hotkey"]) or parse_hotkey(
+            DEFAULT_CONFIG["prompt_hotkey"]
         )
         self._run_lock = threading.Lock()
         self._hotkey_tap = None
@@ -392,33 +407,99 @@ class TextFixApp(rumps.App):
         self._ensure_accessibility()
         self._apply_login_item(self.config.get("open_at_login", False))
 
+    def _schedule_ui_setup(self):
+        AppHelper.callAfter(self._finish_ui_setup)
+
+    def _finish_ui_setup(self):
+        self._ensure_edit_menu()
+        self.menu.clear()
+        self.menu.update(
+            [
+                "Fix Selection",
+                "Rewrite as Better Prompt",
+                None,
+                "Settings...",
+                "Open Config Folder",
+                None,
+                "Quit",
+            ]
+        )
+        self.menu["Fix Selection"].set_callback(self.fix_selection_clicked)
+        self.menu["Rewrite as Better Prompt"].set_callback(self.rewrite_prompt_clicked)
+        self.menu["Settings..."].set_callback(self.settings_clicked)
+        self.menu["Open Config Folder"].set_callback(self.open_config_folder)
+        self.menu["Quit"].set_callback(self.quit_app)
+
+    def _ensure_edit_menu(self):
+        main_menu = NSApp.mainMenu()
+        if main_menu is None:
+            main_menu = NSMenu.alloc().initWithTitle_("MainMenu")
+            NSApp.setMainMenu_(main_menu)
+            app_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
+            main_menu.addItem_(app_item)
+            app_menu = NSMenu.alloc().initWithTitle_(APP_NAME)
+            app_item.setSubmenu_(app_menu)
+            quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"Quit {APP_NAME}",
+                "terminate:",
+                "q",
+            )
+            app_menu.addItem_(quit_item)
+
+        for item in main_menu.itemArray() or []:
+            if item.title() == "Edit":
+                return
+
+        edit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Edit", None, "")
+        main_menu.addItem_(edit_item)
+        edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+        edit_item.setSubmenu_(edit_menu)
+        for title, action, key in (
+            ("Cut", "cut:", "x"),
+            ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"),
+            ("Select All", "selectAll:", "a"),
+        ):
+            menu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
+            edit_menu.addItem_(menu_item)
+
     def on_hotkey(self):
+        self._run_action("fix")
+
+    def on_prompt_hotkey(self):
+        self._run_action("prompt")
+
+    def fix_selection_clicked(self, _):
+        self.on_hotkey()
+
+    def rewrite_prompt_clicked(self, _):
+        self.on_prompt_hotkey()
+
+    def _run_action(self, mode):
         provider = self._model_provider(self.config["model"])
         if not self._get_api_key_for_provider(provider):
             self._prompt_for_api_key(provider)
             return
-        self._run_fix_async()
+        self._run_fix_async(mode)
 
-    @rumps.clicked("Settings...")
     def settings_clicked(self, _):
         self._open_settings()
 
-    @rumps.clicked("Open Config Folder")
     def open_config_folder(self, _):
         os.spawnlp(os.P_NOWAIT, "open", "open", str(CONFIG_DIR))
 
-    @rumps.clicked("Quit")
     def quit_app(self, _):
         rumps.quit_application()
 
-    def _run_fix_async(self):
-        threading.Thread(target=self.fix_selection, daemon=True).start()
+    def _run_fix_async(self, mode="fix"):
+        threading.Thread(target=self.fix_selection, args=(mode,), daemon=True).start()
 
-    def fix_selection(self):
+    def fix_selection(self, mode="fix"):
         if not self._run_lock.acquire(blocking=False):
-            self._notify("Already running", "Please wait for the current request.", force=True)
+            self._notify("Already running", "Please wait for the current request.")
             return
         try:
+            action = self._action_config(mode)
             provider = self._model_provider(self.config["model"])
             api_key = self._get_api_key_for_provider(provider)
             if not api_key:
@@ -432,29 +513,43 @@ class TextFixApp(rumps.App):
 
             display_text = f"{INLINE_SPINNER_PREFIX} {selected_text}"
             self._replace_selection_and_select_left(display_text, len(display_text))
-            self._notify("Fixing text…", "")
-            fixed, error = self._rewrite_text(selected_text, api_key, provider)
+            self._notify(action["in_progress_title"], "")
+            fixed, error = self._rewrite_text(
+                selected_text,
+                api_key,
+                provider,
+                action["system_prompt"],
+            )
             if not fixed:
                 self._replace_selection(selected_text)
-                self._notify(
-                    "No response",
-                    error or "Check your API key or network and retry.",
-                    force=True,
-                )
+                self._handle_api_error(provider, error)
                 return
 
             self._replace_selection(fixed)
-            self._notify("Fixed and pasted", "")
+            self._notify(action["success_title"], "")
         finally:
             self._run_lock.release()
 
-    def _rewrite_text(self, text, api_key, provider):
+    def _action_config(self, mode):
+        if mode == "prompt":
+            return {
+                "system_prompt": self.config["prompt_system_prompt"],
+                "in_progress_title": "Improving prompt…",
+                "success_title": "Prompt rewritten and pasted",
+            }
+        return {
+            "system_prompt": self.config["system_prompt"],
+            "in_progress_title": "Fixing text…",
+            "success_title": "Fixed and pasted",
+        }
+
+    def _rewrite_text(self, text, api_key, provider, system_prompt):
         if provider == "anthropic":
             return rewrite_text_anthropic(
                 text,
                 api_key,
                 self.config["model"],
-                self.config["system_prompt"],
+                system_prompt,
                 self.config["temperature"],
                 self.config["max_output_tokens"],
                 timeout=30,
@@ -463,7 +558,7 @@ class TextFixApp(rumps.App):
             text,
             api_key,
             self.config["model"],
-            self.config["system_prompt"],
+            system_prompt,
             self.config["temperature"],
             self.config["max_output_tokens"],
             timeout=30,
@@ -479,7 +574,16 @@ class TextFixApp(rumps.App):
             return self.config.get("anthropic_api_key", "").strip()
         return self.config.get("openai_api_key", "").strip()
 
+    def _run_on_main_thread(self, func, *args, **kwargs):
+        if threading.current_thread() == threading.main_thread():
+            func(*args, **kwargs)
+            return
+        AppHelper.callAfter(func, *args, **kwargs)
+
     def _prompt_for_api_key(self, provider):
+        self._run_on_main_thread(self._prompt_for_api_key_on_main, provider)
+
+    def _prompt_for_api_key_on_main(self, provider):
         alert = NSAlert.alloc().init()
         alert.setMessageText_("API key required")
         alert.setInformativeText_(f"Add your {provider.capitalize()} API key in Settings to continue.")
@@ -488,6 +592,34 @@ class TextFixApp(rumps.App):
         response = alert.runModal()
         if response == 1000:
             self._open_settings()
+
+    def _prompt_for_api_key_issue(self, provider, detail):
+        self._run_on_main_thread(self._prompt_for_api_key_issue_on_main, provider, detail)
+
+    def _prompt_for_api_key_issue_on_main(self, provider, detail):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("API key not accepted")
+        detail_text = detail.strip() if detail else ""
+        message = f"The {provider.capitalize()} API key was rejected. Update it in Settings."
+        if detail_text:
+            message = f"{message}\n\n{detail_text}"
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_("Open Settings")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response == 1000:
+            self._open_settings()
+
+    def _handle_api_error(self, provider, error):
+        detail = (error or "").strip()
+        lower = detail.lower()
+        auth_indicators = ("401", "403", "unauthorized", "invalid", "api key", "x-api-key")
+        if any(token in lower for token in auth_indicators):
+            self._prompt_for_api_key_issue(provider, detail)
+            return
+        title = "Request failed" if detail else "No response"
+        message = detail or "Check your API key or network and retry."
+        self._show_alert(title, message)
 
     def _copy_selection(self):
         pasteboard = NSPasteboard.generalPasteboard()
@@ -548,6 +680,10 @@ class TextFixApp(rumps.App):
         if new_hotkey and new_hotkey != self.config["hotkey"]:
             if not self._set_hotkey(new_hotkey):
                 return
+        new_prompt_hotkey = fields["prompt_hotkey"].stringValue().strip()
+        if new_prompt_hotkey and new_prompt_hotkey != self.config["prompt_hotkey"]:
+            if not self._set_prompt_hotkey(new_prompt_hotkey):
+                return
 
         openai_key = fields["openai_api_key"].stringValue().strip()
         anthropic_key = fields["anthropic_api_key"].stringValue().strip()
@@ -563,6 +699,11 @@ class TextFixApp(rumps.App):
         prompt_text = fields["system_prompt"].string()
         if prompt_text is not None:
             self.config["system_prompt"] = prompt_text.strip() or self.config["system_prompt"]
+        prompt_rewrite_text = fields["prompt_system_prompt"].string()
+        if prompt_rewrite_text is not None:
+            self.config["prompt_system_prompt"] = (
+                prompt_rewrite_text.strip() or self.config["prompt_system_prompt"]
+            )
         self.config["open_at_login"] = toggles["open_at_login"].state() == 1
         self.config["show_notifications"] = toggles["show_notifications"].state() == 1
 
@@ -578,22 +719,29 @@ class TextFixApp(rumps.App):
         padding = 12
 
         rows = [
-            ("Hotkey", "hotkey", self.config["hotkey"]),
+            ("Fix hotkey", "hotkey", self.config["hotkey"]),
+            ("Prompt hotkey", "prompt_hotkey", self.config["prompt_hotkey"]),
             ("OpenAI API key", "openai_api_key", self.config.get("openai_api_key", "")),
             ("Anthropic API key", "anthropic_api_key", self.config.get("anthropic_api_key", "")),
             ("Model", "model", self.config["model"]),
             ("Temperature", "temperature", str(self.config["temperature"])),
             ("Max output tokens", "max_output_tokens", str(self.config["max_output_tokens"])),
-            ("Prompt", "system_prompt", self.config["system_prompt"]),
+            ("Fix prompt", "system_prompt", self.config["system_prompt"]),
+            ("Prompt rewrite prompt", "prompt_system_prompt", self.config["prompt_system_prompt"]),
         ]
 
         prompt_height = 96
+        multiline_keys = {"system_prompt", "prompt_system_prompt"}
+        multiline_rows = [row for row in rows if row[1] in multiline_keys]
+        standard_rows = [row for row in rows if row[1] not in multiline_keys]
+        toggle_rows = [
+            ("Open at login", "open_at_login", self.config.get("open_at_login", False)),
+            ("Show notifications", "show_notifications", self.config.get("show_notifications", False)),
+        ]
         total_height = (
             padding * 2
-            + (row_height + row_gap) * (len(rows) - 1)
-            + prompt_height
-            + row_height
-            + row_gap
+            + (row_height + row_gap) * (len(standard_rows) + len(toggle_rows))
+            + (prompt_height + row_gap) * len(multiline_rows)
         )
         view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, width, total_height))
 
@@ -609,13 +757,13 @@ class TextFixApp(rumps.App):
             label_field.setEditable_(False)
             label_field.setSelectable_(False)
 
-            if key == "hotkey":
+            if key in {"hotkey", "prompt_hotkey"}:
                 input_field = HotkeyCaptureView.alloc().initWithFrame_(
                     NSMakeRect(padding + label_width, y, input_width, row_height)
                 )
                 input_field.setPlaceholderString_("Click and press keys")
             elif key in {"openai_api_key", "anthropic_api_key"}:
-                input_field = NSSecureTextField.alloc().initWithFrame_(
+                input_field = PasteableSecureTextField.alloc().initWithFrame_(
                     NSMakeRect(padding + label_width, y, input_width, row_height)
                 )
             elif key == "model":
@@ -628,7 +776,7 @@ class TextFixApp(rumps.App):
                 else:
                     input_field.addItemWithTitle_(value)
                     input_field.selectItemWithTitle_(value)
-            elif key == "system_prompt":
+            elif key in multiline_keys:
                 prompt_frame = NSMakeRect(
                     padding + label_width,
                     y - (prompt_height - row_height),
@@ -647,7 +795,7 @@ class TextFixApp(rumps.App):
                 y -= prompt_height + row_gap
                 continue
             else:
-                input_field = NSTextField.alloc().initWithFrame_(
+                input_field = PasteableTextField.alloc().initWithFrame_(
                     NSMakeRect(padding + label_width, y, input_width, row_height)
                 )
             input_field.setStringValue_(value)
@@ -659,20 +807,30 @@ class TextFixApp(rumps.App):
             y -= row_height + row_gap
 
         toggles = {}
-        login_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(padding, y, width - padding * 2, row_height))
-        login_toggle.setButtonType_(3)
-        login_toggle.setTitle_("Open at login")
-        login_toggle.setState_(1 if self.config.get("open_at_login", False) else 0)
-        view.addSubview_(login_toggle)
-        toggles["open_at_login"] = login_toggle
+        switch_width = 44
+        switch_height = 22
+        for label, key, value in toggle_rows:
+            label_field = NSTextField.alloc().initWithFrame_(
+                NSMakeRect(padding, y, label_width, row_height)
+            )
+            label_field.setStringValue_(label)
+            label_field.setBezeled_(False)
+            label_field.setDrawsBackground_(False)
+            label_field.setEditable_(False)
+            label_field.setSelectable_(False)
 
-        y -= row_height + row_gap
-        notify_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(padding, y, width - padding * 2, row_height))
-        notify_toggle.setButtonType_(3)
-        notify_toggle.setTitle_("Show notifications")
-        notify_toggle.setState_(1 if self.config.get("show_notifications", False) else 0)
-        view.addSubview_(notify_toggle)
-        toggles["show_notifications"] = notify_toggle
+            switch_x = width - padding - switch_width
+            switch_y = y + (row_height - switch_height) / 2
+            toggle = NSSwitch.alloc().initWithFrame_(
+                NSMakeRect(switch_x, switch_y, switch_width, switch_height)
+            )
+            toggle.setState_(1 if value else 0)
+
+            view.addSubview_(label_field)
+            view.addSubview_(toggle)
+            toggles[key] = toggle
+
+            y -= row_height + row_gap
 
         return view, fields, toggles
 
@@ -686,6 +844,18 @@ class TextFixApp(rumps.App):
             return False
         self.hotkey_spec = spec
         self.config["hotkey"] = hotkey
+        return True
+
+    def _set_prompt_hotkey(self, hotkey):
+        spec = parse_hotkey(hotkey)
+        if not spec:
+            self._show_alert(
+                "Invalid prompt hotkey",
+                "Use format like <cmd>+<option>+g",
+            )
+            return False
+        self.prompt_hotkey_spec = spec
+        self.config["prompt_hotkey"] = hotkey
         return True
 
     def _parse_float(self, value, default):
@@ -739,33 +909,33 @@ class TextFixApp(rumps.App):
 
     def _apply_login_item(self, enabled):
         plist_path = self._login_item_plist_path()
-        if enabled:
-            self._write_login_item_plist(plist_path)
-            uid = os.getuid()
-            if not self._launchctl("bootstrap", f"gui/{uid}", str(plist_path)):
-                self._launchctl("load", "-w", str(plist_path))
-            return
+        try:
+            if enabled:
+                self._write_login_item_plist(plist_path)
+                uid = os.getuid()
+                if not self._launchctl("bootstrap", f"gui/{uid}", str(plist_path)):
+                    self._launchctl("load", "-w", str(plist_path))
+                return
 
-        uid = os.getuid()
-        if not self._launchctl("bootout", f"gui/{uid}", str(plist_path)):
-            self._launchctl("unload", "-w", str(plist_path))
-        if plist_path.exists():
-            plist_path.unlink()
+            uid = os.getuid()
+            if not self._launchctl("bootout", f"gui/{uid}", str(plist_path)):
+                self._launchctl("unload", "-w", str(plist_path))
+            if plist_path.exists():
+                plist_path.unlink()
+        except OSError as exc:
+            print(f"Unable to update login item: {exc}", file=sys.stderr)
 
     def _setup_hotkey_tap(self):
         def callback(_proxy, event_type, event, _refcon):
             if event_type != kCGEventKeyDown:
                 return event
-            if not self.hotkey_spec:
-                return event
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-            if keycode != self.hotkey_spec["keycode"]:
-                return event
             flags = CGEventGetFlags(event)
-            required = self.hotkey_spec["modifiers"]
-            if required and (flags & required) != required:
+            if hotkey_matches_event(self.prompt_hotkey_spec, keycode, flags):
+                self.on_prompt_hotkey()
                 return event
-            self.on_hotkey()
+            if hotkey_matches_event(self.hotkey_spec, keycode, flags):
+                self.on_hotkey()
             return event
 
         self._hotkey_tap_callback = callback
@@ -789,6 +959,9 @@ class TextFixApp(rumps.App):
         CGEventTapEnable(self._hotkey_tap, True)
 
     def _show_alert(self, title, message):
+        self._run_on_main_thread(self._show_alert_on_main, title, message)
+
+    def _show_alert_on_main(self, title, message):
         alert = NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
@@ -802,8 +975,8 @@ class TextFixApp(rumps.App):
                 "Enable TextFix in System Settings > Privacy & Security > Accessibility, then relaunch.",
             )
 
-    def _notify(self, title, message, force=False):
-        if not force and not self.config.get("show_notifications", False):
+    def _notify(self, title, message):
+        if not self.config.get("show_notifications", False):
             return
         rumps.notification(APP_NAME, title, message)
 

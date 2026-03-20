@@ -1,102 +1,90 @@
 # TextFix
 
-## Install (MVP)
+TextFix is a native Swift/AppKit macOS menu bar app that fixes selected text or rewrites it into a stronger prompt using either OpenAI or Anthropic.
 
-### Option A — Prebuilt app (recommended)
+## Install on macOS
 
-1. Download the latest `TextFix.zip` from GitHub Releases.
-2. Unzip it, then move `TextFix.app` to `/Applications`.
-3. First run: right-click the app and choose **Open** (macOS Gatekeeper).
-4. Grant Accessibility (and Input Monitoring if prompted).
-5. Open **Settings...** from the menu bar and paste your API keys.
-
-### Option B — Run from source
-
-1. Clone the repo and install dependencies:
+1. Clone the repo:
 
 ```bash
 git clone <REPO_URL>
 cd textfixopenai
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-2. Run the app:
+2. Build and install the app:
 
 ```bash
-python textfix_app.py
+chmod +x build_app.sh install.sh
+./install.sh
 ```
 
-3. Open **Settings...** from the menu bar and paste your API keys.
+This builds `dist/TextFix.app` from the Swift package and installs it to `/Applications` when writable, otherwise `~/Applications`.
 
-A lightweight macOS menu bar app that fixes spelling and grammar for selected text using a cloud API. Select text, press the hotkey, and the corrected text is pasted back in place.
+3. Open **Settings...** from the menu bar and add your API keys.
+4. Grant Accessibility permissions and, if prompted, Input Monitoring.
+5. Turn on **Open at login** if you want TextFix to start automatically.
 
-## Setup (Run from Source)
+## Run from source
 
-1. Create a virtual environment and install dependencies:
+Launch directly from SwiftPM:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+swift run TextFix
 ```
 
-2. Set your API keys inside the app via the menu bar `Settings...` window.
+The compiled debug executable lives under `.build/`.
 
-3. Run the app:
+## Build a standalone app bundle
 
 ```bash
-python textfix_app.py
+./build_app.sh
+open dist/TextFix.app
 ```
+
+`build_app.sh` assembles a native app bundle at `dist/TextFix.app`.
 
 ## Tests
 
-Ensure dependencies are installed (see Setup), then run:
-
 ```bash
-python -m unittest discover -s tests
+swift test
 ```
 
 ## Permissions
 
-On first run, macOS will ask for Accessibility permissions (and sometimes Input Monitoring). Enable **TextFix** in:
+On first run, macOS will ask for Accessibility permissions. Enable **TextFix** in:
 
 - System Settings > Privacy & Security > Accessibility
-- System Settings > Privacy & Security > Input Monitoring (if prompted)
+- System Settings > Privacy & Security > Input Monitoring, if macOS prompts for it
 
 Then relaunch the app.
 
-## Hotkey and Settings
+## Hotkeys and settings
 
 Settings are stored at:
 
-```
+```text
 ~/Library/Application Support/TextFix/config.json
 ```
 
-Default hotkey is:
+Defaults:
 
-```
-<cmd>+<shift>+g
-```
-
-You can update `model`, `system_prompt`, `temperature`, `max_output_tokens`, or `show_notifications` in the config file. Most settings (including hotkey, model, and prompt) are also available via the menu bar `Settings...` window.
-
-In the hotkey field, click and press the keys you want (for example, `Cmd+Shift+G`). The field will capture the combination automatically.
-
-## Build a Standalone .app
-
-```bash
-pip install py2app
-python setup.py py2app
-open dist/TextFix.app
+```text
+Fix hotkey: <cmd>+<shift>+g
+Prompt hotkey: <cmd>+<alt>+g
 ```
 
-If you want the app to start at login, add `TextFix.app` to your Login Items in System Settings.
+Menu actions:
 
-API keys are stored locally in the user config file at:
+- `Fix Selection`
+- `Rewrite as Better Prompt`
 
-```
-~/Library/Application Support/TextFix/config.json
-```
+You can update the model, prompts, temperature, max output tokens, notifications, and login-item behavior in the menu bar `Settings...` window. The config file stays in JSON so existing local installs can keep the same storage path.
+
+## Project layout
+
+- `Package.swift`: Swift package definition
+- `Sources/TextFix`: native AppKit menu bar app
+- `Sources/TextFixKit`: shared config, hotkey parsing, and API client logic
+- `Packaging/Info.plist`: app bundle metadata used by `build_app.sh`
+
+Legacy Python files are still present during the migration, but the maintained build and install path is now the Swift app above.
