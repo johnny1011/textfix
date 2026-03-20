@@ -108,6 +108,11 @@ final class HotkeyManager {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
+    private enum MatchedHotkey {
+        case fix
+        case prompt
+    }
+
     func updateHotkeys(fix: HotkeySpec?, prompt: HotkeySpec?) {
         lock.lock()
         defer { lock.unlock() }
@@ -128,7 +133,7 @@ final class HotkeyManager {
         guard let eventTap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: callback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -146,30 +151,44 @@ final class HotkeyManager {
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let eventTap {
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         guard type == .keyDown else {
             return Unmanaged.passUnretained(event)
         }
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
-        let specs: (HotkeySpec?, HotkeySpec?)
+        let matchedHotkey: MatchedHotkey?
         lock.lock()
-        specs = (fixSpec, promptSpec)
+        if HotkeySupport.matches(promptSpec, keyCode: keyCode, flags: flags) {
+            matchedHotkey = .prompt
+        } else if HotkeySupport.matches(fixSpec, keyCode: keyCode, flags: flags) {
+            matchedHotkey = .fix
+        } else {
+            matchedHotkey = nil
+        }
         lock.unlock()
 
-        if HotkeySupport.matches(specs.1, keyCode: keyCode, flags: flags) {
+        if matchedHotkey == .prompt {
             let handler = onPromptHotkey
             DispatchQueue.main.async {
                 handler?()
             }
-            return Unmanaged.passUnretained(event)
+            return nil
         }
 
-        if HotkeySupport.matches(specs.0, keyCode: keyCode, flags: flags) {
+        if matchedHotkey == .fix {
             let handler = onFixHotkey
             DispatchQueue.main.async {
                 handler?()
             }
+            return nil
         }
 
         return Unmanaged.passUnretained(event)
